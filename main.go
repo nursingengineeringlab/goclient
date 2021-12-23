@@ -5,9 +5,15 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/gorilla/websocket"
 	"io/ioutil"
 	"log"
+	"math/rand"
 	"net/http"
+	"net/url"
+	"os"
+	"os/signal"
+	"time"
 )
 
 var addr = flag.String("addr", "127.0.0.1:8000", "http service address")
@@ -38,6 +44,14 @@ type Patient struct {
 	DeviceID   string     `json:"device_id"`
 	DeviceType string     `json:"device_type"`
 	User       UserStruct `json:"user"`
+}
+
+type DataPacket struct {
+	DeviceID string `json:"device_id"`
+	SeqID    int    `json:"sequence_id"`
+	Time     int64  `json:"time"`
+	Value    int    `json:"value"`
+	Battery  int    `json:"battery"`
 }
 
 func userPost(URL string, user string, passwd string, data []byte) (*http.Response, error) {
@@ -119,68 +133,79 @@ func main() {
 	flag.Parse()
 	log.SetFlags(0)
 
-	userList := getUserList()
-	for _, val := range userList {
-		fmt.Println("deleting user: ", val)
-		deleteUser(val.DeviceID)
+	//userList := getUserList()
+	//for _, val := range userList {
+	//	fmt.Println("deleting user: ", val)
+	//	deleteUser(val.DeviceID)
+	//}
+	//deleteUser("7C1A23F227B4")
+
+	createUser()
+	rand.Seed(time.Now().UnixNano())
+
+	dataPacket := DataPacket{"7C1A23F227B4", 0, time.Now().UnixMilli(), 12, 60}
+
+	interrupt := make(chan os.Signal, 1)
+	signal.Notify(interrupt, os.Interrupt)
+
+	u := url.URL{Scheme: "ws", Host: *addr, Path: "/ws/sensor/RR"}
+	log.Printf("connecting to %s", u.String())
+
+	c, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+	if err != nil {
+		log.Fatal("dial:", err)
 	}
+	defer c.Close()
 
-	//createUser()
+	done := make(chan struct{})
 
-	//interrupt := make(chan os.Signal, 1)
-	//signal.Notify(interrupt, os.Interrupt)
-	//
-	//u := url.URL{Scheme: "ws", Host: *addr, Path: "/ws/sensor/RR"}
-	//log.Printf("connecting to %s", u.String())
-	//
-	//c, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
-	//if err != nil {
-	//	log.Fatal("dial:", err)
-	//}
-	//defer c.Close()
-	//
-	//done := make(chan struct{})
-	//
-	//go func() {
-	//	defer close(done)
-	//	for {
-	//		_, message, err := c.ReadMessage()
-	//		if err != nil {
-	//			log.Println("read:", err)
-	//			return
-	//		}
-	//		log.Printf("recv: %s", message)
-	//	}
-	//}()
-	//
-	//ticker := time.NewTicker(time.Second)
-	//defer ticker.Stop()
-	//
-	//for {
-	//	select {
-	//	case <-done:
-	//		return
-	//	case t := <-ticker.C:
-	//		err := c.WriteMessage(websocket.TextMessage, []byte(t.String()))
-	//		if err != nil {
-	//			log.Println("write:", err)
-	//			return
-	//		}
-	//	case <-interrupt:
-	//		log.Println("interrupt")
-	//
-	//		// Cleanly close the connection by sending a close message and then
-	//		// waiting (with timeout) for the server to close the connection.
-	//		err := c.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-	//		if err != nil {
-	//			log.Println("write close:", err)
-	//			return
-	//		}
-	//		select {
-	//		case <-done:
-	//		case <-time.After(time.Second):
-	//		}
-	//		return
-	//	}
-	//}
+	go func() {
+		defer close(done)
+		for {
+			_, message, err := c.ReadMessage()
+			if err != nil {
+				log.Println("read:", err)
+				return
+			}
+			log.Printf("recv: %s", message)
+		}
+	}()
+
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			sigData, err := json.Marshal(dataPacket)
+			if err != nil {
+				log.Fatal(err)
+			}
+			err = c.WriteMessage(websocket.TextMessage, sigData)
+			if err != nil {
+				log.Println("write:", err)
+				return
+			}
+			dataPacket.SeqID = dataPacket.SeqID + 1
+			dataPacket.Time = time.Now().UnixMilli()
+			dataPacket.Value = rand.Intn(100-80+1) + 80
+		case <-interrupt:
+			log.Println("interrupt")
+			deleteUser("7C1A23F227B4")
+			// Cleanly close the connection by sending a close message and then
+			// waiting (with timeout) for the server to close the connection.
+			err := c.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+			if err != nil {
+				log.Println("write close:", err)
+				return
+			}
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+			}
+			return
+		}
+	}
 }
