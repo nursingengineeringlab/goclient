@@ -47,6 +47,7 @@ type Patient struct {
 }
 
 type DataPacket struct {
+	Command  string `json:"command"`
 	DeviceID string `json:"device_id"`
 	SeqID    int    `json:"sequence_id"`
 	Time     int64  `json:"time"`
@@ -143,7 +144,7 @@ func main() {
 	createUser()
 	rand.Seed(time.Now().UnixNano())
 
-	dataPacket := DataPacket{"7C1A23F227B4", 0, time.Now().UnixMilli(), 12, 60}
+	dataPacket := DataPacket{"new", "7C1A23F227B4", 0, time.Now().UnixMilli(), 12, 60}
 
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt)
@@ -191,14 +192,25 @@ func main() {
 			dataPacket.SeqID = dataPacket.SeqID + 1
 			dataPacket.Time = time.Now().UnixMilli()
 			dataPacket.Value = rand.Intn(100-80+1) + 80
+			dataPacket.Command = "update"
 		case <-interrupt:
 			log.Println("interrupt")
 			deleteUser("7C1A23F227B4")
+			dataPacket.Command = "close"
+			sigData, err := json.Marshal(dataPacket)
+			if err != nil {
+				log.Fatal(err)
+			}
+			err = c.WriteMessage(websocket.TextMessage, sigData)
+			if err != nil {
+				log.Println("write close1:", err)
+				return
+			}
 			// Cleanly close the connection by sending a close message and then
 			// waiting (with timeout) for the server to close the connection.
-			err := c.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+			err = c.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 			if err != nil {
-				log.Println("write close:", err)
+				log.Println("write close2:", err)
 				return
 			}
 			select {
